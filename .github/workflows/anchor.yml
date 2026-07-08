@@ -1,0 +1,69 @@
+# SOURCE OF TRUTH — this file is mirrored FROM the app repo (offsite/sentinel/) TO the
+# stock-cockpit-sentinel repo. Edit it here, then mirror to the sentinel repo on change.
+#
+# HOLE 1 — off-server audit-ledger head anchor. PULL-based: this scheduled workflow fetches the app's
+# PUBLIC /api/audit/anchor endpoint and COMMITS the head hash into git. GitHub's commit history is an
+# off-Railway, append-only-in-practice, tamper-evident store — deleting rows from Railway/Postgres
+# cannot delete these commits. Uses ONLY the automatic GITHUB_TOKEN (zero new secret on Railway).
+# The committed file holds ONLY a sha256 hash, a count, and timestamps — no positions, no keys, no code.
+#
+# LOG DISCIPLINE: workflow logs are PUBLIC. This job only prints status words + a seq number. It never
+# echoes secrets (there are none) and only ever handles head-hash metadata.
+#
+# NOTE: broker-native bracket stops remain the PRIMARY protective net; this anchor is a tamper-evidence
+# layer, not a control. The every-30-min commit also keeps the repo "active", which prevents GitHub's
+# 60-day auto-disable of scheduled workflows (keeping the Hole-2 dead-man's schedule alive too).
+name: anchor
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 min. GitHub cron is best-effort — runs may be 5-20 min late.
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: sentinel-commit     # serialize with the dead-man's state commits (Hole 2) to avoid push races
+  cancel-in-progress: false
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch + commit the ledger head anchor
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          set -euo pipefail
+          URL="${APP_URL:-https://web-production-0b611.up.railway.app}"
+
+          # Fetch the public head. On ANY fetch failure, exit 0 WITHOUT a commit — the dead-man workflow
+          # (Hole 2) owns downtime alerting; the anchor must never spam on a transient outage.
+          if ! BODY="$(curl -fsS --max-time 20 "$URL/api/audit/anchor")"; then
+            echo "anchor fetch failed — skipping this run (no commit)"; exit 0
+          fi
+          if [ "$(printf '%s' "$BODY" | jq -r '.ok')" != "true" ]; then
+            echo "anchor endpoint returned ok!=true — skipping (no commit)"; exit 0
+          fi
+
+          STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          SEQ="$(printf '%s' "$BODY" | jq -r '.headSeq')"
+          mkdir -p anchors
+
+          # latest.json = the fetched head + an anchoredAt stamp (when GitHub recorded it).
+          printf '%s' "$BODY" | jq --arg t "$STAMP" '. + {anchoredAt:$t}' > anchors/latest.json
+          # Append one immutable line to the current month's log.
+          printf '%s' "$BODY" | jq -c --arg t "$STAMP" '. + {anchoredAt:$t}' >> "anchors/$(date -u +%Y-%m).ndjson"
+
+          git config user.name  "stock-cockpit-sentinel"
+          git config user.email "sentinel@users.noreply.github.com"
+          git add anchors
+          if git diff --cached --quiet; then
+            echo "nothing changed — no commit"; exit 0
+          fi
+          git commit -m "anchor: seq ${SEQ}"
+
+          # Race with the dead-man's state commits: pull --rebase + retry the push up to 3x.
+          for i in 1 2 3; do
+            if git push; then echo "pushed (seq ${SEQ})"; exit 0; fi
+            echo "push failed — rebasing and retrying ($i)"; git pull --rebase --autostash || true
+          done
+          echo "push failed after retries"; exit 1
