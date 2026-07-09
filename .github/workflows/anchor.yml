@@ -63,7 +63,7 @@ jobs:
           # the previously anchored one. A missing/unparseable previous file = bootstrap (verdict "ok").
           VERDICT="ok"
           if [ -f anchors/latest.json ]; then
-            VERDICT="$(jq -n --argjson new "$BODY" --slurpfile old anchors/latest.json '
+            VERDICT="$(jq -rn --argjson new "$BODY" --slurpfile old anchors/latest.json '
               ($old[0] // {}) as $o
               | (($new.count   // 0)   | if type=="number" then . else 0 end) as $nc
               | (($o.count     // 0)   | if type=="number" then . else 0 end) as $oc
