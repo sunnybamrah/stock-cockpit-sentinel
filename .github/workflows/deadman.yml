@@ -1,0 +1,71 @@
+# SOURCE OF TRUTH — this file is mirrored FROM the app repo (offsite/sentinel/.github/workflows/) TO
+# the stock-cockpit-sentinel repo. Edit it here, then mirror to the sentinel repo on change. The Node
+# logic it runs (deadman.mjs) is mirrored from the app repo's watchdog/offsite/deadman.mjs.
+#
+# HOLE 2 — OFF-RAILWAY DEAD-MAN SWITCH, shipped DISARMED. A LAST-RESORT net for a total-Railway outage
+# (the app AND the on-Railway watchdog can die together — Railway has no SLA). Every ~5 min this polls
+# the app's public /healthz; if the app is dark for TWO consecutive runs AND the dead-man is ARMED AND
+# its OWN live Alpaca keys are present, it flattens the LIVE account directly at Alpaca (sell-only) and
+# alerts the owner's phone.
+#
+# DISARMED BY DEFAULT — on a SCHEDULE this job is a NO-OP SKIP unless repo variable DEADMAN_ARMED is
+# 'true'. Today that variable does not exist and NO live keys exist as repo secrets, so the flatten path
+# is DEAD CODE. Arming is a documented go-live-day step (see RUNBOOK-DEADMAN.md): add the live keys as
+# repo SECRETS + set DEADMAN_ARMED=true. Until armed, broker-native bracket stops are the PRIMARY net;
+# the Railway watchdog is a paper-only secondary; this is the tertiary off-infrastructure net.
+#
+# LOG DISCIPLINE: workflow logs are PUBLIC. deadman.mjs prints ONLY status words + counts + HTTP codes.
+# GitHub masks registered secrets, but the script never echoes secrets or response bodies regardless.
+name: deadman
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 min. GitHub cron is best-effort — real cadence 5-20 min (jitter).
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (probe + decide only; never sends an order)'
+        type: boolean
+        default: true
+permissions:
+  contents: write
+concurrency:
+  group: sentinel-commit     # serialize state commits with the anchor workflow (Hole 1) to avoid push races
+  cancel-in-progress: false
+jobs:
+  deadman:
+    runs-on: ubuntu-latest
+    # ARMING GATE: on a schedule, run ONLY when DEADMAN_ARMED == 'true'. Manual dispatch always runs so a
+    # disarmed dry-run is possible today. While disarmed, scheduled runs show SKIPPED — that is expected.
+    if: ${{ vars.DEADMAN_ARMED == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Probe /healthz, decide, and (only if ARMED + dark + keys) flatten the LIVE account
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          DEADMAN_ARMED: ${{ vars.DEADMAN_ARMED }}
+          # Live keys + alert URL are repo SECRETS. NONE are created today — the flatten path stays dead
+          # code until go-live. GitHub renders unset secrets as empty strings ⇒ keysPresent=false ⇒ the
+          # script stands down and never touches the live host.
+          ALPACA_LIVE_KEY_ID: ${{ secrets.ALPACA_LIVE_KEY_ID }}
+          ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          DEADMAN_ALERT_URL: ${{ secrets.DEADMAN_ALERT_URL }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: node deadman.mjs
+      - name: Persist the cross-run state (streak + fire latch)
+        run: |
+          set -euo pipefail
+          [ -f deadman-state.json ] || { echo "no state file — nothing to commit"; exit 0; }
+          git config user.name  "stock-cockpit-sentinel"
+          git config user.email "sentinel@users.noreply.github.com"
+          git add deadman-state.json
+          if git diff --cached --quiet; then echo "state unchanged — no commit"; exit 0; fi
+          git commit -m "deadman: state update"
+          # Race with the anchor workflow's commits: pull --rebase + retry the push up to 3x.
+          for i in 1 2 3; do
+            if git push; then echo "state pushed"; exit 0; fi
+            echo "push failed — rebasing and retrying ($i)"; git pull --rebase --autostash || true
+          done
+          echo "push failed after retries"; exit 1
