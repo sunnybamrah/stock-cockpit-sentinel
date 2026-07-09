@@ -13,6 +13,14 @@
 # NOTE: broker-native bracket stops remain the PRIMARY protective net; this anchor is a tamper-evidence
 # layer, not a control. The every-30-min commit also keeps the repo "active", which prevents GitHub's
 # 60-day auto-disable of scheduled workflows (keeping the Hole-2 dead-man's schedule alive too).
+#
+# SELF-HEAL GUARD (pre-live audit fix): before overwriting anchors/latest.json this job compares the new
+# head against the previously anchored one. If the new head is BEHIND already-anchored history — count
+# shrank, headSeq went backwards, or the same seq now carries a different hash — it does NOT overwrite
+# latest.json (so /api/audit/verify-anchor keeps flagging TRUNCATED/REWRITTEN forever, not just for one
+# cycle), writes an anchors/ALERT-*.json, and EXITS 1. A failing scheduled workflow emails the repo owner
+# — an off-server truncation alarm with zero new secrets. The canonical rule is src/audit/anchorVerify.js
+# `anchorRegressed` in the app repo; the jq below mirrors it (grep-tested for drift).
 name: anchor
 on:
   schedule:
@@ -48,13 +56,51 @@ jobs:
           SEQ="$(printf '%s' "$BODY" | jq -r '.headSeq')"
           mkdir -p anchors
 
-          # latest.json = the fetched head + an anchoredAt stamp (when GitHub recorded it).
+          git config user.name  "stock-cockpit-sentinel"
+          git config user.email "sentinel@users.noreply.github.com"
+
+          # SELF-HEAL GUARD — mirrors src/audit/anchorVerify.js `anchorRegressed`. Compare the new head to
+          # the previously anchored one. A missing/unparseable previous file = bootstrap (verdict "ok").
+          VERDICT="ok"
+          if [ -f anchors/latest.json ]; then
+            VERDICT="$(jq -n --argjson new "$BODY" --slurpfile old anchors/latest.json '
+              ($old[0] // {}) as $o
+              | (($new.count   // 0)   | if type=="number" then . else 0 end) as $nc
+              | (($o.count     // 0)   | if type=="number" then . else 0 end) as $oc
+              | (($new.headSeq // 0)   | if type=="number" then . else 0 end) as $ns
+              | (($o.headSeq   // 0)   | if type=="number" then . else 0 end) as $os
+              | (($new.headHash // "") | tostring) as $nh
+              | (($o.headHash   // "") | tostring) as $oh
+              | if   $nc < $oc then "count regressed \($oc) -> \($nc)"
+                elif $ns < $os then "headSeq regressed \($os) -> \($ns)"
+                elif ($ns == $os and $os != 0 and $nh != $oh) then "head hash changed at seq \($os)"
+                else "ok" end' 2>/dev/null || echo ok)"
+          fi
+
+          if [ "$VERDICT" != "ok" ]; then
+            # Already-anchored history moved BACKWARDS = truncation/rewrite. Do NOT overwrite latest.json
+            # (keep the higher anchor so verify-anchor keeps flagging the tamper), record an ALERT, fail.
+            echo "ANCHOR REGRESSION DETECTED — $VERDICT (latest.json left UNCHANGED)"
+            ALERT="anchors/ALERT-$(printf '%s' "$STAMP" | tr ':' '-').json"
+            printf '%s' "$BODY" | jq --arg t "$STAMP" --arg v "$VERDICT" \
+              '{alert:"ANCHOR_REGRESSION", detail:$v, observedHead:., observedAt:$t}' > "$ALERT"
+            git add anchors
+            if ! git diff --cached --quiet; then
+              git commit -m "ALERT: anchor regression — $VERDICT"
+              for i in 1 2 3; do
+                if git push; then break; fi
+                echo "push failed — rebasing and retrying ($i)"; git pull --rebase --autostash || true
+              done
+            fi
+            echo "failing the run so GitHub emails the owner — off-server truncation alarm"
+            exit 1
+          fi
+
+          # Monotonic (or first run): record the head. latest.json = fetched head + an anchoredAt stamp.
           printf '%s' "$BODY" | jq --arg t "$STAMP" '. + {anchoredAt:$t}' > anchors/latest.json
           # Append one immutable line to the current month's log.
           printf '%s' "$BODY" | jq -c --arg t "$STAMP" '. + {anchoredAt:$t}' >> "anchors/$(date -u +%Y-%m).ndjson"
 
-          git config user.name  "stock-cockpit-sentinel"
-          git config user.email "sentinel@users.noreply.github.com"
           git add anchors
           if git diff --cached --quiet; then
             echo "nothing changed — no commit"; exit 0
