@@ -19,6 +19,18 @@ git**. Git commit history on GitHub's infrastructure is:
 - **tamper-evident** — if the app's head later disagrees with the last anchor we committed, the app's
   `verify-anchor` check flags **TRUNCATION SUSPECTED**.
 
+### Self-heal guard (the anchor cannot be "healed" over a truncation)
+
+A naive version of this workflow would overwrite `anchors/latest.json` every run with whatever head the
+app reports. That has a hole: truncate the ledger tail and `verify-anchor` flags TRUNCATED — but only
+until the **next** anchor run commits the *shrunken* head as the new "latest", after which `verify-anchor`
+returns MATCH forever. So `anchor.yml` first compares the new head to the previous anchor. If already-
+anchored history has moved **backwards** — the count shrank, `headSeq` went backwards, or the same seq now
+carries a different hash — it **does NOT overwrite `latest.json`** (keeping the higher anchor so
+`verify-anchor` keeps flagging the tamper), writes an `anchors/ALERT-*.json`, and **exits 1**. A failing
+scheduled workflow emails the repo owner — an off-server truncation alarm needing zero new secrets. The
+canonical rule is `src/audit/anchorVerify.js` `anchorRegressed` in the app repo; the jq here mirrors it.
+
 ## Why the repo is PUBLIC
 
 Public repos get **unlimited free Actions minutes**. A 5-minute cron alone (the dead-man in Hole 2)
