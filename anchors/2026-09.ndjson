@@ -151,3 +151,4 @@
 {"ok":true,"count":4298,"headSeq":4298,"headHash":"0d3d99dd16f772ab07ea9440cc3f33d1f816b2ee857744ff0e82a371ca9e5188","at":"2026-09-22T19:55:23.879Z","anchoredAt":"2026-09-23T07:01:51Z"}
 {"ok":true,"count":4298,"headSeq":4298,"headHash":"0d3d99dd16f772ab07ea9440cc3f33d1f816b2ee857744ff0e82a371ca9e5188","at":"2026-09-22T19:55:23.879Z","anchoredAt":"2026-09-23T12:50:05Z"}
 {"ok":true,"count":4761,"headSeq":4761,"headHash":"21122933d17b50e9f6c2787a7c3d72d063c98ea1054274d2ce14b9d2d458cbf2","at":"2026-09-23T17:31:23.084Z","anchoredAt":"2026-09-23T17:36:09Z"}
+{"ok":true,"count":5025,"headSeq":5025,"headHash":"886b584caf3f31c476389ed7f7a329ea94400004c6c8b369574d2694c01a2d65","at":"2026-09-23T19:57:57.111Z","anchoredAt":"2026-09-23T20:53:05Z"}
