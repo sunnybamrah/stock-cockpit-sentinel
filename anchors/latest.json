@@ -1,8 +1,8 @@
 {
   "ok": true,
-  "count": 14881,
-  "headSeq": 14881,
-  "headHash": "2c3c3476b62c89451edb2fc1e4d39e6a53697e35aa7b124f0ae069afd28696f9",
-  "at": "2026-11-18T18:36:43.962Z",
-  "anchoredAt": "2026-11-18T18:56:13Z"
+  "count": 14891,
+  "headSeq": 14891,
+  "headHash": "cf0424e9ec03e0ab23b1df778962acd342cb33be56fd3a4724d261afacec76ce",
+  "at": "2026-11-18T20:46:44.025Z",
+  "anchoredAt": "2026-11-19T00:55:20Z"
 }
